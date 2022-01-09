@@ -1,0 +1,783 @@
+---
+title: "Capstone Project - Prediction of Default In Insurance Coy"
+author: "Chinedu H Obetta"
+date: "11/8/2020"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Load all libraries/Packages
+```{r warning = FALSE, message = FALSE}
+library(readxl)
+library(ggplot2)
+library(gridExtra)
+library(DataExplorer)
+library(mice)   # To treat missing values using k-Nearest Neighbour(KNN)
+library(caTools) # Split Data into Test and Train Set
+library(lmtest) # To confirm the validity of the logistics models
+library(plyr) # To rename variable 
+library(usdm) # for VIF
+library(caTools) # Split Data into Test and Train Set
+library(caret) # for confusion matrix function
+library(randomForest) # to build a random forest model
+library(rpart) # to build a decision model
+library(rpart.plot) # to plot decision tree model
+library(rattle) 
+library(xgboost) # to build a XGboost model
+library(ROCR)
+```
+
+#    Environment Set up and Data Import
+#    Set Working Directory
+```{r}
+setwd("C:/Users/Chinedu/Documents/GREAT LEARNING-UNIVERSITY OF TEXAS/TABLEAU/Capstone Project")
+dip <- read_xlsx("premium.xlsx")
+```
+
+
+
+# Take 5% of the whole data to speed-up the model building & iterations 
+```{r}
+prop.table(table(dip$renewal))*100
+split <- sample.split(dip$renewal, SplitRatio = 0.95)
+db <- subset(dip, split == FALSE)
+```
+
+
+# Dropping the huge dip  file from the encironment as it is no longer required
+```{r}
+rm(dip)
+rm(split)
+```
+
+
+
+## Renaming of variables
+```{r}
+db <- rename(db, c("perc_premium_paid_by_cash_credit" = "cash.credit",  "Count_3-6_months_late"="late.pmt.3_6", "Count_6-12_months_late"="late.pmt.6_12", "Count_more_than_12_months_late"= "late.pmt.More_12Mnth", "Marital Status" = "Marital.Status", "Veh_Owned" = "Vehicle", "No_of_dep" ="Dependents", "no_of_premiums_paid" = "No_premium",  "sourcing_channel" ="Sources", "residence_area_type" = "Residence", "age_in_days" ="Age", "renewal"="Default" ))
+```
+
+
+# Dropping ID
+```{r}
+db$id<- NULL
+```
+
+
+#2b Creation of new variables " Late Payment"
+```{r}
+
+db <- as.data.frame(db)
+
+db$late.pmt <- rowSums(subset(db, select= late.pmt.3_6: late.pmt.More_12Mnth))
+
+```
+
+#Dropping 
+```{r}
+db$late.pmt.3_6<- NULL
+db$late.pmt.6_12 <- NULL
+db$late.pmt.More_12Mnth <- NULL
+db$Default<-as.factor(db$Default)
+```
+
+
+
+
+# Ensure that the target variable Renamed the levels & Relevel
+```{r}
+levels(db$Default) <- c("Default", "NotDefault")
+db$Default <- relevel(db$Default, ref = "Default") # Reference Default : Default
+levels(db$Default)
+
+```
+
+
+
+# Summary of the data
+```{r}
+summary(db)
+```
+
+
+Observations:
+
+* A glimpse of the median and the maximum values shows the existence of potential outliers in some of the variables such as the ratio of cash payment, the age of the policy holders, the income of the policy holders, the total number of premium paid by policy holders and the value of the premium paid
+
+
+# COnfirmation of missing variables
+```{r}
+sum(is.na(db ))
+str(db)
+
+```
+
+Observations:
+* The data does not have a missing value
+
+
+#Checking for outliers on continous variables 
+
+```{r}
+outlier_dip <- db
+
+ggplot(outlier_dip, aes( y = Age)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "Age", subtitle = "Boxplot of Age")
+
+
+ggplot(outlier_dip, aes( y = Income)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "Income", subtitle = "Boxplot of Income")
+
+ggplot(outlier_dip, aes( y = risk_score)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "Risk Score", subtitle = "Boxplot on Policy Risk Score")
+
+ggplot(outlier_dip, aes( y = premium)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "premium", subtitle = "Boxplot on premium")
+
+```
+
+
+Observation
+* The boxplots for the continous variables confirms the exisitence of outliers in the variables. These identified outliers will be treated later.
+
+
+##Treatment of outliers
+```{r}
+outfun <- function(x){
+    qntile <- quantile(x, probs = c(.25, 0.75))
+    caps <- quantile(x, probs = c(0.05, 0.95))
+    H <- 1.5 *IQR(x, na.rm = T)
+    x[x< (qntile[1]-H)] <- caps[1]
+    x[x> (qntile[2])+ H] <- caps[2]
+    return(x)
+}
+```
+
+
+
+# Treatment by applying the custom function for outliers as defined
+```{r}
+
+outlier_dip$Age <- outfun(outlier_dip$Age)
+outlier_dip$premium <-outfun(outlier_dip$premium)
+outlier_dip$risk_score <- outfun(outlier_dip$risk_score)
+outlier_dip$Income <- outfun(outlier_dip$Income)
+```
+
+
+# Confirmation of the treatment
+```{r}
+ggplot(outlier_dip, aes( y = Age)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "Age", subtitle = "Boxplot of Age")
+
+
+ggplot(outlier_dip, aes( y = Income)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "Income", subtitle = "Boxplot of Income")
+
+ggplot(outlier_dip, aes( y = risk_score)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "Risk Score", subtitle = "Boxplot on Policy Risk Score")
+
+ggplot(outlier_dip, aes( y = premium)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "premium", subtitle = "Boxplot on premium")
+
+```
+
+
+
+
+
+#Variable transformation otherwise known as the feature Engineering
+
+Here, we will modify existing features to get a better insights into the dependent variable"Default"
+
+#1 Variable: Age
+```{r}
+summary(outlier_dip$Income)
+```
+
+Observation:
+* The age of the policy holders were recorded in days in stead of years. Thus, the variable "Age" will be transformed to be in years instead of days. This will give us more useful insight about the age of the policyholders and its relevant on the dependent variable
+
+
+
+#1 Conversion of age in days to age in years
+```{r}
+outlier_dip$Age <- round((outlier_dip$Age)/365)
+summary(outlier_dip$Income)
+```
+
+##Default Rate Across Income Group
+
+```{r}
+# Between $20,000 & $44,999 =>  Low_income(20k-45k)
+# Between $45,000 & $119,999 => Middle_class(46k-119k)
+# Between $120,000 & $149,999	 => Upper_middle_class(120k-150k)
+# Between $150,000 & $199,999	=> 	High_income(150k-200k)
+# More than $200,000 =>  Super_Rich(>200k)
+d <- c(20000, 45000,120000, 150000, 200000, 500000)
+groups <- c("Low_income(20k-45k)", "Middle_class(46k-119k)", "Upper_middle_class(120k-150k)", "High_income(150k-200k)", "Super_Rich(>200)"  )
+
+```
+
+
+#Addition of new variables
+```{r}
+outlier_dip$Income_Group <- outlier_dip$Income
+outlier_dip$Income_Group <- cut(outlier_dip$Income_Group, breaks = d, labels = groups)
+round(prop.table(table(outlier_dip$Income_Group))*100)
+
+```
+
+
+Observations:
+*  39% of the customer's under review are super rich, that is they earn over $200,000 annually. While 29% are middle class customers.
+
+* Less than 5% of the policy holders earn less than $45, 000 annually
+
+
+
+
+##Default Rate Across Generation
+```{r}
+# [Age]>=20 AND [Age]<=40 THEN " Millennials-'32-40'"
+# [Age]>=41 AND [Age]<=55 THEN " Generation X-'41-55'"
+# [Age]>=56 AND [Age]<=74 THEN " Baby Boomer-'56-74'"
+# [Age]>= 75 AND [Age]<=92 THEN " Silent Gen-'75-95'"
+b <- c(20,40,55,75,95)
+names <- c("Millennials(32-40)", "Generation_X(41-55)", "Baby Boomer(56-74)", "Silent_Gen(75-95)")
+
+```
+
+
+#Addition of new variables
+```{r}
+outlier_dip$Generation <- outlier_dip$Age
+outlier_dip$Generation <- cut(outlier_dip$Generation, breaks = b, labels = names)
+round(prop.table(table(outlier_dip$Generation))*100)
+```
+
+Observation:
+
+* Over 70% of the policy holders are between 41 and 74 years old, 25% are Millennials while the balance of 6% are over 75 years old.
+
+
+
+```{r}
+# 0 Number ->  "Zero"
+# between 1-5# of late payment -> "Between 1 & 5"
+# More than 5# of late payment ->  "greater than 5"
+e <- c(-5,0,5,20)
+parts <- c("Zero", "Between 1 & 5", " greater than 5")
+```
+
+
+#Addition of new variables
+```{r}
+outlier_dip$late.pmt.type <- outlier_dip$late.pmt
+outlier_dip$late.pmt.type <- cut(outlier_dip$late.pmt.type, breaks= e, labels = parts)
+prop.table(table(outlier_dip$late.pmt.type))*100
+
+```
+
+
+
+
+
+
+
+##Treatment of factor variables 
+```{r}
+names(outlier_dip)
+rfac.names <- c(4,10,11, 13, 15, 16, 17)
+outlier_dip[, rfac.names] <- lapply(outlier_dip[, rfac.names], factor)
+
+```
+
+
+
+
+# FInal Review of preprocessed dataset
+```{r}
+treated_dip <- outlier_dip
+str(treated_dip)
+```
+
+
+### EDA
+
+#Distribution of the dependent variable
+```{r}
+prop.table(table(treated_dip$Default))*100
+ggplot(treated_dip) +
+ aes(x = Default) +
+ geom_bar(fill = "green") +
+ theme_minimal()
+
+prop.table(table(treated_dip$Marital.Status))
+
+names(treated_dip)
+```
+
+Observations;
+ 
+ * The observation shows that 6% of the dataset defaulted in the renewal of the policy while 94% did not default.
+ * The dataset is imbalanced as it is skewed to non defaulters. It is therefore important to balance the dataset using smote during the model building
+ 
+ 
+ 
+ # Distribution on Age
+```{r}
+ggplot(treated_dip, aes( y = Age)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "Age", subtitle = "Boxplot of Age")
+
+ggplot(treated_dip, aes_string(x=treated_dip$Age, fill="Default")) + geom_histogram(bins=20,alpha=0.5,colour='black') + labs(x = " Age of the Policyholder ", y = "Frequency", subtitle = "The Analysis of Age")
+```
+ 
+ 
+ Observations;
+** The average of all the policyholders is 52 years old, the youngest and oldest policyholder is 21 and 103 years old respectively.
+** There is no much difference in the age range of policyholder that renew their policy and those that do not renew theirs.
+** Most of the policy holders are within the working age as 75% of all the policy holders are below 62 years old .
+
+* The boxplot does show some number of  potential outliers as the difference between the mean age and the oldest person is very high. Thus, there will be need for outliers treatment.
+*  The P-value is very low, thus, the distribution of age follows normal distribution  and not due to chance
+
+
+# Observations on Premium
+```{r}
+ggplot(treated_dip, aes( y = premium)) + 
+    geom_boxplot(outlier.colour = "red", outlier.size = 1, col= "blue") +  labs( y = "premium", subtitle = "Boxplot on premium")
+
+ggplot(treated_dip, aes_string(x=treated_dip$premium, fill="Default")) + geom_histogram(bins=10,alpha=0.5,colour='black') + labs(x = " Premium Paid", y = "Frequency", subtitle = "The Analysis of Premium Paid By the PolicyHolders")
+```
+
+Observations Premiums:
+
+* There seems to be no difference in premium paid amongst the policyholders that renew their policy and those that do not 
+* The P-value is very low, thus, the distribution of premium paid by the policy holders follows normal distribution  and not due to chance.
+* The average premium paid by policyholders is USd10,988 and 75% of them pay less than USD13,800 
+* The Boxplot shows that the observations contains few outliers and this has been treated before building a model.
+
+
+
+
+
+The Analysis of the risk ratings of the policyholder.
+```{r}
+ggplot(treated_dip, aes_string(x=treated_dip$risk_score, fill="Default")) + geom_histogram(bins=50,alpha=0.5,colour='black') + labs(x = " Risk Score", y = "Frequency", subtitle = "TThe Analysis of the risk ratings of the policyholder")
+```
+
+Observations on the Risk Rating of the Policyholders:
+
+* The risk score is skewed to the right with an average risk rating of 99.08. The minimum and maxium risk score is 92.76 and 99.89 respectively.
+* There seems to be an effect of the risk rating of the policyholders on the status of the Defaults. The average risk rating of those that meets that premium payment seems slightly higher than those that fails to make the payment. The insught is a bit strange as one had expected the impact to be the other way round
+
+
+
+
+# Rate of Default Vs Number of late payment
+```{r}
+ggplot(treated_dip) +
+ aes(x = late.pmt.type, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Number of late payment ", y = "Frequency", subtitle = "Rate of Default Vs Number of late payment") +
+ theme_minimal()
+```
+
+Observations;
+
+* More than 50% of the policyholders that has a record of more than  5 late payment default in the premium payment.
+* It is also observed that most of the policyholders that do not have any record of late payment hardly miss their payment.
+* It is very believed  that the rate of default increases as the number of late payment increases 
+
+
+
+
+# Rate of Default Vs Rate of Default Vs Income Group
+```{r}
+ggplot(treated_dip) +
+ aes(x = Income_Group, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Number of late payment ", y = "Frequency", subtitle = "Rate of Default Vs Income Group") +
+ theme_minimal()
+```
+
+
+
+# Rate of Default Vs Generation
+```{r}
+ggplot(treated_dip) +
+ aes(x = Generation, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Generations ", y = "Frequency", subtitle = "Rate of Default Vs Generation") +
+ theme_minimal()
+
+```
+
+
+
+
+
+#Rate of Default Vs Marital.Status
+```{r}
+ggplot(treated_dip) +
+ aes(x = Marital.Status, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Marital.Status ", y = "Frequency", subtitle = "Rate of Default Vs Marital.Status") +
+ theme_minimal()
+```
+
+Observations:
+
+*  The Default of the insurance policy does not seem to be dependent on the marital status of the policyholder
+*  The test statisitic also confirms this as p-value is more than 0.05.
+
+
+# Rate of Default Vs Number of vehicle owned
+```{r}
+ggplot(treated_dip) +
+ aes(x = Vehicle, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Number of Vehicle ", y = "Frequency", subtitle = "Rate of Default Vs Number of vehicle owned") +
+ theme_minimal()
+```
+
+Observations;
+*  The Default of the insurance policy does not seem to be dependent on the number of vehcles owned by the policyholder. 
+*  The test statisitic also confirms this as p-value is more than 0.05.
+
+
+Rate of Default Vs Number of dependents
+```{r}
+ggplot(treated_dip) +
+ aes(x = Dependents, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Number of dependents ", y = "Frequency", subtitle = "Rate of Default Vs Number of dependents") +
+ theme_minimal()
+chisq.test(treated_dip$Default, treated_dip$Dependents)
+```
+
+Observations;
+
+*  The Default of the insurance policy does not seem to be dependent on the number of dependent on thepolicyholder.
+*  The test statisitic also confirms this as p-value is more than 0.05.
+
+
+
+# Rate of the Default Vs The Nature of Accomodation
+```{r}
+ggplot(treated_dip) +
+ aes(x = Accomodation, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " The Nature of Accomodation ", y = "Frequency", subtitle = "Rate of the Default Vs The Nature of Accomodation") +
+ theme_minimal()
+
+```
+
+Observations;
+
+*  The Default of the insurance policy does not depend on whether the policyholder resides in a owned or rented appartment.
+*  The test statistic also confirms this as p-value is more than 0.05.
+
+
+# Rate of  Default Vs Policyholder Sign Up method
+```{r}
+ggplot(treated_dip) +
+ aes(x = Sources, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Policyholder Sign Up method ", y = "Frequency", subtitle = "Rate of  Default Vs Policyholder Sign Up method") +
+ theme_minimal()
+```
+
+Observation:
+
+*  The method through which policyholders are sourced does not have any sigificant effect on whether the policy will be renewed or not as shown in the bar plot. The test statisitic also confirms this as p-value is more than 0.05.
+
+
+# Rate of  Default Vs Policyholder's Place of Residence
+```{r}
+ggplot(treated_dip) +
+ aes(x = Residence, fill = Default) +
+ geom_bar(position = "fill") +
+ scale_fill_hue() +
+ labs(x = " Policyholder's Place of Residence", y = "Frequency", subtitle = "Rate of  Default Vs Policyholder's Place of Residence") +
+ theme_minimal()
+```
+
+
+Observations;
+
+* The tendency to renew the policy does not depend on whether the policy holder resides in urban or rural as shown in the bar plot. The test statistic also confirms the barplot
+
+
+
+
+
+
+# Split the 10% data-subset into Train & Test (70-30 split)
+```{r}
+set.seed(1234)
+
+trainIndex <- createDataPartition(db$Default, p = .70, list = FALSE)
+
+db_Train <- db[ trainIndex,]
+db_Test  <- db[-trainIndex,]
+
+prop.table(table(db_Train$Default))*100
+prop.table(table(db_Test$Default))*100
+```
+
+
+# Setting up the general parameters for training multiple models
+```{r}
+fitControl <- trainControl(
+              method = 'repeatedcv',           # k-fold cross validation
+              number = 3,                     # number of folds or k
+              repeats = 1,                     # repeated k-fold cross-validation
+              allowParallel = TRUE,
+              classProbs = TRUE,
+              sampling = "up",
+              summaryFunction=twoClassSummary# should class probabilities be returned
+    ) 
+```
+
+
+# Model _1 : GLM : Simple Logistic Regression Model
+```{r}
+lr_model <- train(Default ~ ., data = db_Train,
+                 method = "glm",
+                 family = "binomial",
+                 preProcess = c("scale"),
+                 trControl = fitControl)
+
+summary(lr_model)
+varImp(lr_model)
+
+```
+
+
+# Predict using the trained model & check performance on test set
+```{r}
+
+lr_predictions_test <- predict(lr_model, newdata = db_Train, type = "raw")
+confusionMatrix(lr_predictions_test, db_Train$Default)
+
+lr_predictions_test <- predict(lr_model, newdata = db_Train, type = "raw")
+confusionMatrix(lr_predictions_test, db_Train$Default)
+
+
+
+# se"N"sitivity : True "P"ositive rate
+# s"P"ecificity : True "N"egative rate
+```
+
+
+# Model _2 : Step-Wise AIC
+```{r}
+lr_stepAIC_model <- train(Default ~ ., data = db_Train,
+                 method = "glmStepAIC",
+                 family = "binomial",
+                 preProcess = c("scale"),
+                 trControl = fitControl)
+summary(lr_stepAIC_model)
+
+```
+
+
+
+# Predict using the trained model & check performance on test set
+```{r}
+lr_StepAIc_predictions_test <- predict(lr_stepAIC_model, newdata = db_Test, type = "raw")
+confusionMatrix(lr_StepAIc_predictions_test, db_Test$Default)
+
+# se"N"sitivity : True "P"ositive rate
+# s"P"ecificity : True "N"egative rate
+
+
+```
+
+
+
+# Model_3 : Naive-Bayes
+```{r}
+nb_model <- train(Default ~ ., data = db_Train,
+                 method = "naive_bayes",
+                 preProcess = c("center"),
+                 trControl = fitControl)
+
+summary(nb_model)
+nb_model$finalModel
+```
+
+# Predict using the trained model & check performance on test set
+```{r}
+nb_predictions_train <- predict(nb_model, newdata = db_Train, type = "raw")
+confusionMatrix(nb_predictions_train, db_Train$Default)
+
+
+nb_predictions_test <- predict(nb_model, newdata = db_Test, type = "raw")
+confusionMatrix(nb_predictions_test, db_Test$Default)
+
+
+```
+
+
+
+# Model_4 : KNN 
+```{r}
+knn_model <- train(Default ~ ., data = db_Train,
+                   preProcess = c("center", "scale"),
+                   method = "knn",
+                   tuneLength = 49,
+                   trControl = fitControl) 
+```
+
+# Predict using the trained model & check performance on test set
+```{r}
+knn_predictions_test <- predict(knn_model, newdata = db_Train, type = "raw")
+confusionMatrix(knn_predictions_test, db_Train$Default)
+
+knn_predictions_test <- predict(knn_model, newdata = db_Test, type = "raw")
+confusionMatrix(knn_predictions_test, db_Test$Default)
+
+```
+
+# Model_5 : Random Forest 
+```{r}
+rf_model <- train(Default ~ ., data = db_Train,
+                     method = "rf",
+                     ntree = 30,
+                     maxdepth = 5,
+                     tuneLength = 10,
+                     trControl = fitControl)
+rf_model
+
+```
+
+# Predict using the trained model & check performance on test set
+```{r}
+rf_predictions_test <- predict(rf_model, newdata = db_Train, type = "raw")
+confusionMatrix(rf_predictions_test, db_Train$Default)
+
+rf_predictions_test <- predict(rf_model, newdata = db_Test, type = "raw")
+confusionMatrix(rf_predictions_test, db_Test$Default)
+```
+
+
+
+# Model_6 : Xtreme Gradient boosting Machines 
+```{r}
+cv.ctrl <- trainControl(method = "repeatedcv", repeats = 1,number = 3, 
+                        summaryFunction = twoClassSummary,
+                        classProbs = TRUE,
+                        sampling = "up",
+                        allowParallel=T)
+
+    xgb.grid <- expand.grid(nrounds = 100,
+                            eta = c(0.01),
+                            max_depth = c(2,4),
+                            gamma = 0,               #default=0
+                            colsample_bytree = 1,    #default=1
+                            min_child_weight = 1,    #default=1
+                            subsample = 1            #default=1
+    )
+
+    xgb_model <-train(Default~.,
+                     data=db_Train,
+                     method="xgbTree",
+                     preProcess = c("scale"),
+                     trControl=cv.ctrl,
+                     tuneGrid=xgb.grid,
+                     verbose=T,
+                     nthread = 2
+        )
+```
+
+# Predict using the trained model & check performance on test set
+```{r}
+xgb_predictions_train <- predict(xgb_model, newdata = db_Train, type = "raw")
+confusionMatrix(xgb_predictions_train, db_Train$Default)
+
+xgb_predictions_test <- predict(xgb_model, newdata = db_Test, type = "raw")
+confusionMatrix(xgb_predictions_test, db_Test$Default)
+```
+
+
+
+
+
+
+
+---------------------------  COMPARING MODELS  ---------------------
+```{r}
+# Compare model performances using resample()
+models_to_compare <- resamples(list(Log_Reg = lr_model, Step_AIC =lr_stepAIC_model,
+                                 Navie_Ba = nb_model, 
+                                 KNN = knn_model, 
+                                 Rand_For = rf_model,
+                                 Xtr_gr_b = xgb_model
+                                                                  ))
+
+# Summary of the models performances
+summary(models_to_compare)
+```
+
+# Draw box plots to compare models
+```{r}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(models_to_compare, scales=scales)
+
+```
+
+#Improving Extreme Gradient Boosting
+
+```{r}
+xgb_predictions_test <- predict(xgb_model, newdata = db_Test, type = "prob")
+
+table(xgb_predictions_test$Default > 0.44, db_Test$Default)
+```
+
+
+
+```{r}
+library(ROCR)
+p_test <- prediction(xgb_predictions_test$Default, db_Test$Default)
+perf <- performance(p_test, "tpr", "fpr")
+plot(perf, colorize= TRUE)
+
+```
+
+
+
+
+
+
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
